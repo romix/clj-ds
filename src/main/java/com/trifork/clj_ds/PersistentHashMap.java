@@ -25,7 +25,11 @@ import java.util.concurrent.atomic.AtomicReference;
  Any errors are my own
  */
 
-public class PersistentHashMap<K,V> extends APersistentMap<K,V> implements IEditableCollection<MapEntry<K, V>>, IObj {
+public class PersistentHashMap<K, V> extends APersistentMap<K, V> implements
+		IEditableCollection<MapEntry<K, V>>, IObj{
+
+private static final int BITS_PER_INTEGER = 32;
+private static final int BITS_PER_LEVEL = 5;
 
 final int count;
 final INode root;
@@ -35,6 +39,12 @@ final IPersistentMap _meta;
 
 final public static PersistentHashMap EMPTY = new PersistentHashMap(0, null, false, null);
 final private static Object NOT_FOUND = new Object();
+
+// DeBruijn sequence used to do very fast bits enumeration. Taken from 
+// http://stackoverflow.com/questions/838097/fastest-way-to-enumerate-through-turned-on-bits-of-an-integer
+final private static int[] MulDeBruijnBitPos = new int[] { 0, 1, 28, 2, 29,
+			14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8, 31, 27, 13, 23, 21, 19,
+			16, 7, 26, 12, 18, 6, 11, 5, 10, 9 };
 
 @SuppressWarnings("unchecked")
 final public static <K,V> PersistentHashMap<K, V> emptyMap() {
@@ -155,6 +165,7 @@ public IPersistentMap<K,V> without(K key){
 		return this;
 	return new PersistentHashMap<K,V>(meta(), count - 1, newroot, hasNull, nullValue); 
 }
+
 
 public Iterator<Map.Entry<K, V>> iterator2(){
 	return new Iterator<Map.Entry<K, V>>() {
@@ -423,7 +434,7 @@ final static class ArrayNode implements INode{
 			INode node = array[index];
 			if(node == null)
 				return;
-			current = node.nodeItFrom(shift + 5, hash, key);
+			current = node.nodeItFrom(shift + BITS_PER_LEVEL, hash, key);
 			index += 1;
 			
 		}
@@ -495,8 +506,8 @@ final static class ArrayNode implements INode{
 		int idx = mask(hash, shift);
 		INode node = array[idx];
 		if(node == null)
-			return new ArrayNode(null, count + 1, cloneAndSet(array, idx, BitmapIndexedNode.EMPTY.assoc(shift + 5, hash, key, val, addedLeaf)));			
-		INode n = node.assoc(shift + 5, hash, key, val, addedLeaf);
+			return new ArrayNode(null, count + 1, cloneAndSet(array, idx, BitmapIndexedNode.EMPTY.assoc(shift + BITS_PER_LEVEL, hash, key, val, addedLeaf)));			
+		INode n = node.assoc(shift + BITS_PER_LEVEL, hash, key, val, addedLeaf);
 		if(n == node)
 			return this;
 		return new ArrayNode(null, count, cloneAndSet(array, idx, n));
@@ -507,7 +518,7 @@ final static class ArrayNode implements INode{
 		INode node = array[idx];
 		if(node == null)
 			return this;
-		INode n = node.without(shift + 5, hash, key);
+		INode n = node.without(shift + BITS_PER_LEVEL, hash, key);
 		if(n == node)
 			return this;
 		if (n == null) {
@@ -523,7 +534,7 @@ final static class ArrayNode implements INode{
 		INode node = array[idx];
 		if(node == null)
 			return null;
-		return node.find(shift + 5, hash, key); 
+		return node.find(shift + BITS_PER_LEVEL, hash, key); 
 	}
 
 	public Object find(int shift, int hash, Object key, Object notFound){
@@ -531,7 +542,7 @@ final static class ArrayNode implements INode{
 		INode node = array[idx];
 		if(node == null)
 			return notFound;
-		return node.find(shift + 5, hash, key, notFound); 
+		return node.find(shift + BITS_PER_LEVEL, hash, key, notFound); 
 	}
 	
 	public ISeq nodeSeq(){
@@ -574,11 +585,11 @@ final static class ArrayNode implements INode{
 		int idx = mask(hash, shift);
 		INode node = array[idx];
 		if(node == null) {
-			ArrayNode editable = editAndSet(edit, idx, BitmapIndexedNode.EMPTY.assoc(edit, shift + 5, hash, key, val, addedLeaf));
+			ArrayNode editable = editAndSet(edit, idx, BitmapIndexedNode.EMPTY.assoc(edit, shift + BITS_PER_LEVEL, hash, key, val, addedLeaf));
 			editable.count++;
 			return editable;			
 		}
-		INode n = node.assoc(edit, shift + 5, hash, key, val, addedLeaf);
+		INode n = node.assoc(edit, shift + BITS_PER_LEVEL, hash, key, val, addedLeaf);
 		if(n == node)
 			return this;
 		return editAndSet(edit, idx, n);
@@ -589,7 +600,7 @@ final static class ArrayNode implements INode{
 		INode node = array[idx];
 		if(node == null)
 			return this;
-		INode n = node.without(edit, shift + 5, hash, key, removedLeaf);
+		INode n = node.without(edit, shift + BITS_PER_LEVEL, hash, key, removedLeaf);
 		if(n == node)
 			return this;
 		if(n == null) {
@@ -649,6 +660,7 @@ final static class ArrayNode implements INode{
 }
 
 final static class BitmapIndexedNode implements INode{
+	
 	static final BitmapIndexedNode EMPTY = new BitmapIndexedNode(null, 0, new Object[0]);
 	
 	int bitmap;
@@ -656,7 +668,7 @@ final static class BitmapIndexedNode implements INode{
 	final AtomicReference<Thread> edit;
 
 	final int index(int bit){
-		return Integer.bitCount(bitmap & (bit - 1));
+		return BitCount.bitCount(bitmap & (bit - 1));
 	}
 
 	BitmapIndexedNode(AtomicReference<Thread> edit, int bitmap, Object[] array){
@@ -700,7 +712,7 @@ final static class BitmapIndexedNode implements INode{
 				index += 2;
 				INode val = ((INode) valOrNode);
 				if (val != null) {
-					Iterator nodeIt  = val.nodeItFrom(shift + 5, hash, key);
+					Iterator nodeIt  = val.nodeItFrom(shift + BITS_PER_LEVEL, hash, key);
 					if (nodeIt.hasNext()) {
 						current = nodeIt;
 						return;
@@ -831,7 +843,7 @@ final static class BitmapIndexedNode implements INode{
 			Object keyOrNull = array[2*idx];
 			Object valOrNode = array[2*idx+1];
 			if(keyOrNull == null) {
-				INode n = ((INode) valOrNode).assoc(shift + 5, hash, key, val, addedLeaf);
+				INode n = ((INode) valOrNode).assoc(shift + BITS_PER_LEVEL, hash, key, val, addedLeaf);
 				if(n == valOrNode)
 					return this;
 				return new BitmapIndexedNode(null, bitmap, cloneAndSet(array, 2*idx+1, n));
@@ -845,22 +857,47 @@ final static class BitmapIndexedNode implements INode{
 			return new BitmapIndexedNode(null, bitmap, 
 					cloneAndSet(array, 
 							2*idx, null, 
-							2*idx+1, createNode(shift + 5, keyOrNull, valOrNode, hash, key, val)));
+							2*idx+1, createNode(shift + BITS_PER_LEVEL, keyOrNull, valOrNode, hash, key, val)));
 		} else {
-			int n = Integer.bitCount(bitmap);
+			int n = BitCount.bitCount(bitmap);
 			if(n >= 16) {
-				INode[] nodes = new INode[32];
-				int jdx = mask(hash, shift);
-				nodes[jdx] = EMPTY.assoc(shift + 5, hash, key, val, addedLeaf);  
-				int j = 0;
-				for(int i = 0; i < 32; i++)
-					if(((bitmap >>> i) & 1) != 0) {
+					INode[] nodes = new INode[BITS_PER_INTEGER];
+					int jdx = mask(hash, shift);
+					nodes[jdx] = EMPTY.assoc(shift + BITS_PER_LEVEL, hash, key,
+							val, addedLeaf);
+					int j = 0;
+					
+					// Iterate over all set bits in a fast way
+					int bmap = bitmap;
+					while (bmap != 0)
+				    {
+				        int m = (bmap & (- bmap));
+				        bmap ^= m;
+				        int i = MulDeBruijnBitPos[(int)((m * 0x077CB531) >>> 27)];
 						if (array[j] == null)
-							nodes[i] = (INode) array[j+1];
+							nodes[i] = (INode) array[j + 1];
 						else
-							nodes[i] = EMPTY.assoc(shift + 5, Util.hash(array[j]), array[j], array[j+1], addedLeaf);
+							nodes[i] = EMPTY.assoc(shift + BITS_PER_LEVEL,
+									Util.hash(array[j]), array[j],
+									array[j + 1], addedLeaf);
 						j += 2;
 					}
+//				for(int i = 0; i < BITS_PER_INTEGER && (bmap != 0); /* i++ */ ) {
+////					if(((bitmap >>> i) & 1) != 0) {
+//					if((bmap  & 1) != 0) {
+//						if (array[j] == null)
+//							nodes[i] = (INode) array[j+1];
+//						else
+//							nodes[i] = EMPTY.assoc(shift + BITS_PER_LEVEL, Util.hash(array[j]), array[j], array[j+1], addedLeaf);
+//						j += 2;
+//					}
+//					
+//					if((bmap & 0xF) == 0) {
+//						i+=4; bmap >>>= 4;
+//					} else {
+//						i+=1; bmap >>>= 1;
+//					}
+//				}
 				return new ArrayNode(null, n + 1, nodes);
 			} else {
 				Object[] newArray = new Object[2*(n+1)];
@@ -882,7 +919,7 @@ final static class BitmapIndexedNode implements INode{
 		Object keyOrNull = array[2*idx];
 		Object valOrNode = array[2*idx+1];
 		if(keyOrNull == null) {
-			INode n = ((INode) valOrNode).without(shift + 5, hash, key);
+			INode n = ((INode) valOrNode).without(shift + BITS_PER_LEVEL, hash, key);
 			if (n == valOrNode)
 				return this;
 			if (n != null)
@@ -905,7 +942,7 @@ final static class BitmapIndexedNode implements INode{
 		Object keyOrNull = array[2*idx];
 		Object valOrNode = array[2*idx+1];
 		if(keyOrNull == null)
-			return ((INode) valOrNode).find(shift + 5, hash, key);
+			return ((INode) valOrNode).find(shift + BITS_PER_LEVEL, hash, key);
 		if(Util.equals(key, keyOrNull))
 			return new MapEntry(keyOrNull, valOrNode);
 		return null;
@@ -919,7 +956,7 @@ final static class BitmapIndexedNode implements INode{
 		Object keyOrNull = array[2*idx];
 		Object valOrNode = array[2*idx+1];
 		if(keyOrNull == null)
-			return ((INode) valOrNode).find(shift + 5, hash, key, notFound);
+			return ((INode) valOrNode).find(shift + BITS_PER_LEVEL, hash, key, notFound);
 		if(Util.equals(key, keyOrNull))
 			return valOrNode;
 		return notFound;
@@ -932,7 +969,7 @@ final static class BitmapIndexedNode implements INode{
 	private BitmapIndexedNode ensureEditable(AtomicReference<Thread> edit){
 		if(this.edit == edit)
 			return this;
-		int n = Integer.bitCount(bitmap);
+		int n = BitCount.bitCount(bitmap);
 		Object[] newArray = new Object[n >= 0 ? 2*(n+1) : 4]; // make room for next assoc
 		System.arraycopy(array, 0, newArray, 0, 2*n);
 		return new BitmapIndexedNode(edit, bitmap, newArray);
@@ -969,7 +1006,7 @@ final static class BitmapIndexedNode implements INode{
 			Object keyOrNull = array[2*idx];
 			Object valOrNode = array[2*idx+1];
 			if(keyOrNull == null) {
-				INode n = ((INode) valOrNode).assoc(edit, shift + 5, hash, key, val, addedLeaf);
+				INode n = ((INode) valOrNode).assoc(edit, shift + BITS_PER_LEVEL, hash, key, val, addedLeaf);
 				if(n == valOrNode)
 					return this;
 				return editAndSet(edit, 2*idx+1, n);
@@ -981,9 +1018,9 @@ final static class BitmapIndexedNode implements INode{
 			} 
 			addedLeaf.val = addedLeaf;
 			return editAndSet(edit, 2*idx, null, 2*idx+1, 
-					createNode(edit, shift + 5, keyOrNull, valOrNode, hash, key, val)); 
+					createNode(edit, shift + BITS_PER_LEVEL, keyOrNull, valOrNode, hash, key, val)); 
 		} else {
-			int n = Integer.bitCount(bitmap);
+			int n = BitCount.bitCount(bitmap);
 			if(n*2 < array.length) {
 				addedLeaf.val = addedLeaf;
 				BitmapIndexedNode editable = ensureEditable(edit);
@@ -994,18 +1031,46 @@ final static class BitmapIndexedNode implements INode{
 				return editable;
 			}
 			if(n >= 16) {
-				INode[] nodes = new INode[32];
+				INode[] nodes = new INode[BITS_PER_INTEGER];
 				int jdx = mask(hash, shift);
-				nodes[jdx] = EMPTY.assoc(edit, shift + 5, hash, key, val, addedLeaf);  
+				nodes[jdx] = EMPTY.assoc(edit, shift + BITS_PER_LEVEL, hash, key, val, addedLeaf);  
 				int j = 0;
-				for(int i = 0; i < 32; i++)
-					if(((bitmap >>> i) & 1) != 0) {
-						if (array[j] == null)
-							nodes[i] = (INode) array[j+1];
-						else
-							nodes[i] = EMPTY.assoc(edit, shift + 5, Util.hash(array[j]), array[j], array[j+1], addedLeaf);
-						j += 2;
-					}
+				int bmap = bitmap;
+
+				// Iterate over all set bits in a fast way
+				while (bmap != 0)
+			    {
+			        int m = (bmap & (- bmap));
+			        bmap ^= m;
+			        int i = MulDeBruijnBitPos[(int)((m * 0x077CB531) >>> 27)];
+					if (array[j] == null)
+						nodes[i] = (INode) array[j + 1];
+					else
+							nodes[i] = EMPTY.assoc(edit,
+									shift + BITS_PER_LEVEL,
+									Util.hash(array[j]), array[j],
+									array[j + 1], addedLeaf);
+					j += 2;
+				}
+				
+				
+				
+//				for(int i = 0; i < BITS_PER_INTEGER && (bmap != 0); /* i++ */) {
+//					if((bmap  & 1) != 0) {
+////					if(((bitmap >>> i) & 1) != 0) {
+//						if (array[j] == null)
+//							nodes[i] = (INode) array[j+1];
+//						else
+//							nodes[i] = EMPTY.assoc(edit, shift + BITS_PER_LEVEL, Util.hash(array[j]), array[j], array[j+1], addedLeaf);
+//						j += 2;
+//					}
+//
+//					if((bmap & 0xF) == 0) {
+//						i+=4; bmap >>>= 4;
+//					} else {
+//						i+=1; bmap >>>= 1;
+//					}
+//				}
 				return new ArrayNode(edit, n + 1, nodes);
 			} else {
 				Object[] newArray = new Object[2*(n+4)];
@@ -1030,7 +1095,7 @@ final static class BitmapIndexedNode implements INode{
 		Object keyOrNull = array[2*idx];
 		Object valOrNode = array[2*idx+1];
 		if(keyOrNull == null) {
-			INode n = ((INode) valOrNode).without(edit, shift + 5, hash, key, removedLeaf);
+			INode n = ((INode) valOrNode).without(edit, shift + BITS_PER_LEVEL, hash, key, removedLeaf);
 			if (n == valOrNode)
 				return this;
 			if (n != null)
@@ -1163,18 +1228,18 @@ final static class HashCollisionNode implements INode{
 		int idx = findIndex(key);
 		if(idx < 0)
 			return null;
-		if(Util.equals(key, array[idx]))
+//		if(Util.equals(key, array[idx]))
 			return new MapEntry(array[idx], array[idx+1]);
-		return null;
+//		return null;
 	}
 
 	public Object find(int shift, int hash, Object key, Object notFound){
 		int idx = findIndex(key);
 		if(idx < 0)
 			return notFound;
-		if(Util.equals(key, array[idx]))
+//		if(Util.equals(key, array[idx]))
 			return array[idx+1];
-		return notFound;
+//		return notFound;
 	}
 
 	public ISeq nodeSeq(){
@@ -1348,19 +1413,25 @@ public static void main(String[] args){
 */
 
 private static INode[] cloneAndSet(INode[] array, int i, INode a) {
-	INode[] clone = array.clone();
+//	INode[] clone = array.clone();
+	INode[] clone = new INode[array.length];
+	System.arraycopy(array, 0, clone, 0, array.length);	
 	clone[i] = a;
 	return clone;
 }
 
 private static Object[] cloneAndSet(Object[] array, int i, Object a) {
-	Object[] clone = array.clone();
+//	Object[] clone = array.clone();
+	Object[] clone = new Object[array.length];
+	System.arraycopy(array, 0, clone, 0, array.length);	
 	clone[i] = a;
 	return clone;
 }
 
 private static Object[] cloneAndSet(Object[] array, int i, Object a, int j, Object b) {
-	Object[] clone = array.clone();
+//	Object[] clone = array.clone();
+	Object[] clone = new Object[array.length];
+	System.arraycopy(array, 0, clone, 0, array.length);	
 	clone[i] = a;
 	clone[j] = b;
 	return clone;
